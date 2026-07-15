@@ -1,0 +1,10 @@
+# Core RL / simulation
+torch>=2.0
+numpy>=1.24
+gymnasium>=0.29
+pybullet>=3.2.5
+
+# Analysis & plotting
+pandas>=2.0
+matplotlib>=3.7
+plotly>=5.18

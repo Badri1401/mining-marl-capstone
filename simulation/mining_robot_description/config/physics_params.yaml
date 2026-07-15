@@ -1,0 +1,180 @@
+# Physics Parameters for Mining Robot Simulation
+# ================================================
+# Shared configuration for PyBullet and Gazebo consistency
+# All units in SI (meters, kilograms, seconds)
+#
+# These parameters ensure the trained policy transfers correctly
+# between PyBullet (training) and Gazebo (deployment validation).
+
+# =========================
+# ROBOT PHYSICAL PROPERTIES
+# =========================
+robot:
+  # Chassis
+  chassis_diameter: 0.200        # meters (200mm)
+  chassis_height: 0.052          # meters (52mm dual-layer)
+  chassis_mass: 0.50             # kg (acrylic body + electronics)
+  
+  # Wheels
+  wheel_diameter: 0.065          # meters (65mm)
+  wheel_width: 0.026             # meters (26mm)
+  wheel_mass: 0.05               # kg per wheel
+  wheel_separation: 0.160        # meters (track width)
+  
+  # Caster
+  caster_radius: 0.015           # meters (15mm ball)
+  caster_mass: 0.02              # kg
+  
+  # Total mass (should match URDF inertials)
+  total_mass: 0.65               # kg (chassis + 2 wheels + caster + sensors)
+  
+  # Ground clearance
+  ground_clearance: 0.001        # meters (1mm minimum)
+
+# =========================
+# DYNAMICS AND FRICTION
+# =========================
+dynamics:
+  # Wheel friction coefficients
+  wheel_friction_mu1: 0.8        # Primary friction (lateral)
+  wheel_friction_mu2: 0.8        # Secondary friction (longitudinal)
+  
+  # Caster friction (low for easy rotation)
+  caster_friction: 0.1
+  
+  # Damping coefficients
+  linear_damping: 0.3            # Linear velocity damping
+  angular_damping: 0.3           # Angular velocity damping
+  
+  # Contact parameters (ODE solver)
+  contact_kp: 1000000.0          # Contact stiffness
+  contact_kd: 100.0              # Contact damping
+
+# =========================
+# MOTION LIMITS
+# =========================
+limits:
+  max_linear_velocity: 1.5       # m/s
+  max_angular_velocity: 3.14159  # rad/s (π rad/s)
+  max_linear_acceleration: 2.0   # m/s²
+  max_angular_acceleration: 6.0  # rad/s²
+  max_wheel_torque: 5.0          # Nm
+
+# =========================
+# SENSOR SPECIFICATIONS
+# =========================
+sensors:
+  # RPLidar A2 specifications
+  lidar:
+    type: "RPLidar_A2"
+    range_min: 0.12              # meters
+    range_max: 10.0              # meters
+    angle_min: -3.14159          # radians (-π)
+    angle_max: 3.14159           # radians (π)
+    samples: 360                 # rays per scan
+    scan_frequency: 10.0         # Hz
+    noise_stddev: 0.01           # meters
+  
+  # Intel RealSense D435i specifications
+  depth_camera:
+    type: "RealSense_D435i"
+    width: 640                   # pixels
+    height: 480                  # pixels
+    horizontal_fov: 1.518        # radians (87°)
+    vertical_fov: 1.012          # radians (58°)
+    range_min: 0.1               # meters
+    range_max: 10.0              # meters
+    update_rate: 30.0            # Hz
+    noise_stddev: 0.005          # meters
+  
+  # IMU (built into D435i)
+  imu:
+    update_rate: 200.0           # Hz
+    gyro_noise: 0.0002           # rad/s
+    accel_noise: 0.017           # m/s²
+
+# =========================
+# ARENA SPECIFICATIONS
+# =========================
+arena:
+  size_x: 50.0                   # meters
+  size_y: 50.0                   # meters
+  
+  # Terrain
+  heightmap:
+    resolution: 512              # pixels per axis
+    elevation_min: -0.15         # meters
+    elevation_max: 0.15          # meters
+    num_variants: 5              # terrain variants
+  
+  # Friction zones
+  normal_friction: 0.8           # mu for normal ground
+  puddle_friction: 0.1           # mu for water puddles
+  
+  # Obstacles
+  num_pillars: 40
+  num_ore_piles: 15
+  num_equipment: 8
+  
+  # Walls
+  wall_height: 2.0               # meters
+  wall_thickness: 0.5            # meters
+
+# =========================
+# SIMULATION PARAMETERS
+# =========================
+simulation:
+  # Physics timestep
+  fixed_timestep: 0.01           # seconds (100 Hz physics)
+  substeps: 10                   # physics substeps per step
+  
+  # Real-time factor
+  real_time_factor: 1.0          # 1.0 = real-time
+  
+  # Gravity
+  gravity: [0.0, 0.0, -9.81]     # m/s²
+
+# =========================
+# NAVIGATION PARAMETERS
+# =========================
+navigation:
+  # Goal reaching
+  goal_threshold: 0.75           # meters (distance to consider goal reached)
+  
+  # Collision detection
+  collision_radius: 0.25         # meters (robot radius for collision check)
+  safety_margin: 0.1             # meters (additional buffer)
+  
+  # Episode limits
+  max_episode_steps: 400
+  timeout_penalty: true
+
+# =========================
+# CURRICULUM LEARNING
+# =========================
+curriculum:
+  phases:
+    - name: "Easy1"
+      goal_distance: [2.0, 4.0]
+      obstacles: 0
+      terrain_difficulty: 0.3
+    - name: "Easy2"
+      goal_distance: [3.0, 5.0]
+      obstacles: 2
+      terrain_difficulty: 0.4
+    - name: "Med1"
+      goal_distance: [4.0, 7.0]
+      obstacles: 4
+      terrain_difficulty: 0.5
+    - name: "Hard1"
+      goal_distance: [5.0, 10.0]
+      obstacles: 6
+      terrain_difficulty: 0.7
+    - name: "Hard2"
+      goal_distance: [6.0, 12.0]
+      obstacles: 8
+      terrain_difficulty: 0.8
+    - name: "VHard"
+      goal_distance: [8.0, 15.0]
+      obstacles: 10
+      terrain_difficulty: 1.0

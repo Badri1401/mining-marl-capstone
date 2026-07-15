@@ -1,0 +1,34 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- ROS 2 / colcon build artifacts ---
+install/
+log/
+build/
+
+# --- Logs ---
+*.log
+
+# --- Regenerated training runs (created by src/train_maddpg.py) ---
+results/maddpg_v3_*/
+
+# --- Regenerated analysis outputs (created by analysis/*.py) ---
+all_plots/
+hard_logs_graphs/
+hard_logs_graphs_updated/
+results/all_plots/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
