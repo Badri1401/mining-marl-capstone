@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+title: "Multi-Robot Mining Navigation with MADDPG"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: Praharaj
+    given-names: Badrikanath
+  - family-names: Sreeram
+    given-names: M. V.
+repository-code: "https://github.com/Badri1401/mining-marl-capstone"
+abstract: >-
+  A multi-agent reinforcement learning system that trains three autonomous
+  differential-drive robots to navigate a GPS-denied underground mining arena
+  using MADDPG with centralized critics, decentralized execution, and an
+  eight-phase curriculum. Includes a matching ROS 2 / Gazebo simulation.
+keywords:
+  - reinforcement-learning
+  - multi-agent
+  - maddpg
+  - robotics
+  - ros2
+  - autonomous-navigation
+license: MIT

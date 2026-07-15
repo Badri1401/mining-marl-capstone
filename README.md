@@ -1,5 +1,11 @@
 # Multi-Robot Mining Navigation with MADDPG
 
+[![CI](https://github.com/Badri1401/mining-marl-capstone/actions/workflows/ci.yml/badge.svg)](https://github.com/Badri1401/mining-marl-capstone/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/)
+[![Framework: PyTorch](https://img.shields.io/badge/framework-PyTorch-ee4c2c.svg)](https://pytorch.org/)
+[![ROS 2 Humble](https://img.shields.io/badge/ROS_2-Humble-22314e.svg)](https://docs.ros.org/en/humble/)
+
 A **multi-agent reinforcement learning** system that trains a team of 3 autonomous
 robots to navigate a GPS-denied underground mining arena and reach their goals
 without colliding. Training uses **MADDPG** (Multi-Agent Deep Deterministic Policy
@@ -205,6 +211,19 @@ pure-Python scripts under each package's `scripts/` folder.
 - [`docs/PARALLEL_ROLLOUT.md`](docs/PARALLEL_ROLLOUT.md) — how parallel episode collection works.
 
 ---
+
+## Contributing
+
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) and the
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). Bug reports and feature requests can be
+filed via the issue templates.
+
+## Citation
+
+If you use this work, please cite it (see [`CITATION.cff`](CITATION.cff)):
+
+> Praharaj, B. and Sreeram, M. V. *Multi-Robot Mining Navigation with MADDPG.* 2026.
+> https://github.com/Badri1401/mining-marl-capstone
 
 ## License
 

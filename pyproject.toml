@@ -1,0 +1,34 @@
+[project]
+name = "mining-marl-capstone"
+version = "0.1.0"
+description = "Multi-agent RL (MADDPG) for 3-robot navigation in a GPS-denied underground mine, with a ROS 2 / Gazebo simulation."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Badrikanath Praharaj" },
+    { name = "M. V. Sreeram" },
+]
+keywords = ["reinforcement-learning", "multi-agent", "maddpg", "robotics", "ros2"]
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24",
+    "gymnasium>=0.29",
+    "pybullet>=3.2.5",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "plotly>=5.18",
+]
+
+[project.urls]
+Homepage = "https://github.com/Badri1401/mining-marl-capstone"
+Repository = "https://github.com/Badri1401/mining-marl-capstone"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Keep the default rule set relaxed for research code.
+select = ["E", "F", "W"]
+ignore = ["E501", "E741"]

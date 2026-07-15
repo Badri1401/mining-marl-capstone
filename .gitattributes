@@ -1,0 +1,14 @@
+# Normalize line endings
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+
+# Treat these as binary
+*.pt binary
+*.stl binary
+*.png binary
+
+# Keep GitHub language stats focused on the source code
+results/**    linguist-documentation
+docs/**       linguist-documentation
+*.html        linguist-generated
