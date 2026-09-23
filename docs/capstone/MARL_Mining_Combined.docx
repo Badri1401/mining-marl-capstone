@@ -1,0 +1,429 @@
+# MARL_Mining_Badri (Combined)
+
+## 1. Executive Overview
+
+This repository implements a full multi-robot mining navigation stack using centralized-training MADDPG with three physically simulated robots in a PyBullet mining arena.[file:1][file:2][file:3]
+All statements in this document are grounded in the current `train_maddpg_v3.py`, `environment_maddpg_v2.py`/`environment_maddpg_v3.py`, and the top-level project documentation files in the repository.[file:1][file:2][file:3]
+
+The core idea is: **define a strict 90% mastery curriculum over realistic mining geometry, then engineer the reward, replay buffer, and rollout system so that the team policy can actually reach that bar without reward hacking.**[file:1][file:2]
+
+---
+
+## 2. System Architecture (What Exists Today)
+
+### 2.1 High-Level Components
+
+From the project documentation and V3 training code, the system is organized as follows.[file:1][file:2]
+
+- **Environment layer (PyBullet)**:
+  - `environment_maddpg_v2.py` / `environment_maddpg_v3.py`: mining environment with 3 robots and a 50 m × 50 m arena, matching the SDF obstacles.[file:1][file:3]
+  - Inherits physics, observation design, and LiDAR implementation from V2, but V3 uses updated curriculum and reward spec.[file:1][file:3]
+- **Trainer layer (MADDPG V3)**:
+  - `train_maddpg_v3.py`: centralized-training MADDPG with shared networks, curriculum logic, replay buffer, adaptive noise, dead-actor recovery, and logging.[file:1][file:2]
+- **Parallel rollout layer**:
+  - `ParallelEnvManager` and `EpisodeCollector` in `parallel_env_manager.py`: SubprocVecEnv-style rollout and CPU budget control.[file:1][file:2]
+- **Global project docs** (in repo, referenced here):
+  - `PROJECT_DOCUMENTATION.txt`, `QUICK_REFERENCE.txt`, `README.md`, `IMPLEMENTATION_90_PERCENT.txt`, `PARALLEL_ROLLOUT_DOCUMENTATION.md`.[file:1]
+
+### 2.2 Algorithmic Core: MADDPG V3
+
+The final trainer implements a CTDE MADDPG variant with the following architecture.[file:1][file:2]
+
+- **Actor**:
+  - 3-layer MLP with hidden dimension 384 and final `Tanh` output.[file:2]
+  - Small-range initialization on the last linear layer: weights and biases in [−0.003, 0.003] to avoid initial action saturation.[file:2]
+- **TwinCritic**:
+  - Two Q-networks (`q1`, `q2`), each a 3-layer MLP with hidden dimension 384.[file:2]
+  - Input is the concatenation of observations and actions from all agents; outputs are clamped to [−100, 100] for numerical stability.[file:2]
+  - Target Q uses TD3-style minimization: `min(q1_target, q2_target)`.[file:2]
+- **Target networks**:
+  - Actor and critic targets updated with soft updates using \(\tau = 0.005\).[file:2]
+- **Policy smoothing**:
+  - Gaussian noise with standard deviation `policy_noise=0.2`, clipped by `noise_clip=0.5`, is added to target actions and then `Tanh`-clamped to [−1, 1].[file:2]
+- **Gradient clipping**:
+  - Max-norm 1.0 for both actor and critic parameters during backprop.[file:2]
+- **Hyperparameters**:
+  - Discount factor \(\gamma = 0.99\), actor learning rate 1e−4, critic learning rate 3e−4, `policy_delay=2`, batch size 128 (as used in `train_maddpg_v3`).[file:2]
+- **Device and compilation**:
+  - Runs on CPU or CUDA; when on CUDA, optionally wraps networks in `torch.compile(..., mode="reduce-overhead")` to reduce Python overhead.[file:2]
+
+All three agents are instances of the same `MADDPGAgent` class with shared architecture; they differ only by agent index and observation stream but share the same code path.[file:1][file:2]
+
+### 2.3 Environment Core: MiningEnvironmentMADDPG (V2/V3)
+
+The environment keeps the core geometry and physics consistent with the mining SDF and mining robot URDF.[file:1][file:3]
+
+- **Arena geometry**:
+  - Square arena of 50 m × 50 m (half-extent 25 m).[file:3]
+  - Walls: 0.5 m thick and 2.0 m tall, placed at x = ±25 m and y = ±25 m.[file:3]
+- **Obstacles** (as in V2; V3 inherits these specifications):[file:1][file:3]
+  - 28 cylindrical **pillars**, each defined by `(x, y, radius)` with height 3.0 m; outer-perimeter pillars are removed so that the spawn zone (radius < 10 m) is clear.[file:3]
+  - 10 **ore piles** modelled as boxes with parameters `(x, y, size_x, size_y, size_z, yaw)`; LiDAR uses an effective radius equal to `max(size_x, size_y)/2` for these boxes.[file:3]
+  - 6 large **equipment** boxes with `(x, y, size_x, size_y, size_z, yaw)`; again the effective radius is `max(size_x, size_y)/2` for LiDAR and collision approximations.[file:3]
+- **Robots**:[file:1][file:3]
+  - Differential-drive robots with a cylindrical chassis:
+    - Chassis radius 0.1 m (200 mm diameter), height 0.052 m.[file:3]
+    - Chassis mass 0.50 kg; two wheels of radius 0.0325 m, width 0.026 m, track width 0.160 m, with wheel mass 0.05 kg each.[file:3]
+    - Total robot mass 0.65 kg including sensors and caster.[file:3]
+    - Ground clearance equal to wheel radius (0.0325 m).
+  - **Spawn logic**:
+    - Robots spawn on an 8.0 m radius ring around the origin.[file:3]
+    - At each reset, a random base angle is chosen; robots are spaced evenly in angle around this base and further perturbed by small angular jitter to break symmetry.[file:3]
+  - **Motion limits and dynamics** (taken from YAML spec):[file:3]
+    - Max linear velocity \(v_{max} = 1.5\) m/s; max angular velocity \(\omega_{max} = \pi\) rad/s.[file:3]
+    - Max linear acceleration 2.0 m/s², max angular acceleration 6.0 rad/s².[file:3]
+    - Linear damping 0.3, angular damping 0.3, lateral friction coefficient 0.8 on the robot body.[file:3]
+  - **Frozen-on-goal semantics**:
+    - When a robot’s distance to its goal drops below `goal_threshold`, it is marked `frozen`; its velocity is set to zero and it no longer responds to actions.[file:1][file:3]
+
+- **Collision detection**:[file:1][file:3]
+  - Robot–obstacle collisions: a circle–circle overlap check `(rx − ox)^2 + (ry − oy)^2 < (r_robot + r_obstacle + 0.05)^2` is performed for each robot–obstacle pair.[file:3]
+  - Robot–robot collisions: for each robot pair, `(x1 − x2)^2 + (y1 − y2)^2 < (2·robot_radius + 0.05)^2`; if violated, both robots are marked as colliding and their `collision_count` increments.[file:3]
+
+---
+
+## 3. State and Action Representation (Explicit)
+
+### 3.1 Observation Space Layout
+
+`_setup_spaces` in the environment defines a fixed layout for the observation vector for each robot.[file:3]
+
+- **Goal-relative features** (indices 0–4):
+  - `dx`: goal_x − robot_x.
+  - `dy`: goal_y − robot_y.
+  - `dist`: Euclidean distance to the goal.
+  - `cos(angle)`, `sin(angle)`: heading of the goal direction relative to the robot’s orientation.[file:3]
+- **LiDAR distances** (indices 5–20):
+  - 16 LiDAR rays evenly spaced over 360° (22.5° per ray), each storing the normalized distance in [0, 1], where 1.0 corresponds to 10 m and values are clipped to [range_min, range_max] before normalization.[file:3]
+- **Velocity features** (indices 21–23):
+  - `vx`, `vy`: planar linear velocities in world coordinates.[file:3]
+  - `omega`: angular velocity about the vertical axis.[file:3]
+- **Teammate features** (indices ≥24):
+  - For each other robot: `(dx, dy, dist, reached_flag)` describing that teammate relative to the current robot.[file:3]
+
+The total observation dimension is:
+
+\[
+\text{obs_dim} = 5 + 16 + 3 + 4 \times (N - 1),
+\]
+
+where N is the number of robots (e.g. 32 for N = 3).[file:3]
+
+### 3.2 Action Space and Scaling
+
+The environment uses a continuous 2-D action per robot:[file:3]
+
+- Action vector `[v_norm, omega_norm]` with both components in [−1, 1].
+- The physical commands are:
+  - Linear velocity: \(v = v_{norm} \cdot v_{max} = v_{norm} \cdot 1.5\) m/s.[file:3]
+  - Angular velocity: \(\omega = \omega_{norm} \cdot \omega_{max} = \omega_{norm} \cdot \pi\) rad/s.[file:3]
+
+These velocities are converted into world-frame base velocities using the robot’s current heading; the environment then calls `resetBaseVelocity` with `[vx, vy, 0]` and `[0, 0, omega]`.[file:3]
+
+---
+
+## 4. LiDAR Implementation
+
+### 4.1 Configuration
+
+The LiDAR subsystem is optimized for training speed while preserving sufficient spatial coverage for navigation.[file:1][file:3]
+
+- **Number of rays**: 16 rays uniformly spanning 360° (22.5° between adjacent rays).[file:3]
+- **Range**:
+  - Minimum 0.12 m; maximum 10.0 m, with Gaussian noise of standard deviation 0.01 m added to distances.[file:3]
+- **Obstacles in LiDAR**:
+  - Static obstacles (pillars, ore piles, equipment) are encoded as `(ox, oy, r)` in a precomputed array.[file:3]
+  - Other robots are added as dynamic obstacles with effective radius equal to the robot radius, **excluding robots that are currently `frozen`** so that robots which have reached their goals do not permanently block teammates in LiDAR.[file:3]
+
+### 4.2 Vectorized Ray–Obstacle Intersection
+
+The LiDAR implementation is fully vectorized.[file:3]
+
+- All obstacle centers and radii are stacked into an array of shape (N, 3), where each row is `(ox, oy, r)`.[file:3]
+- Ray directions (`cos_a`, `sin_a`) are computed once per call, forming 16 direction vectors.[file:3]
+- Using broadcasting, the environment computes ray–circle intersection parameters for all rays and obstacles at once, filters by discriminant ≥ 0, and takes the minimum positive intersection distance per ray, capped at `lidar_range_max`.[file:3]
+
+This removes Python-level loops over obstacles and rays, making LiDAR queries fast enough for 100 Hz physics and multi-robot training.[file:3]
+
+---
+
+## 5. Curriculum Design and Phase Gating
+
+### 5.1 V2 vs V3 Curricula
+
+Two curriculum definitions exist in the code.[file:1][file:2][file:3]
+
+- **V2 original** (`v2_original`, 9 phases):
+  - Phases: Easy1, Easy2, Easy3, Med1, Med2a, Med2b, Hard1, Hard2, VHard.[file:2]
+  - Heterogeneous thresholds and step limits per phase; Med2a/b use ranges 4–6 m with varying steps, etc.[file:1][file:3]
+- **V3 smooth** (`v3_smooth`, 8 phases):
+  - Phases: Easy1, Easy2, Easy3, Med1, Med2, Hard1, Hard2, VHard.[file:2]
+  - Unified **0.75 m goal threshold** across all environment phases (V3 env).[file:1][file:3]
+  - Monotonically increasing spawn distance ranges and episode lengths from Easy through Hard/VHard, scaled to the 50 m arena.[file:1][file:3]
+
+`train_maddpg_v3.py` selects tables based on `--curriculum-mode`:[file:2]
+
+- `--curriculum-mode v2_original` → `PHASE_LIST_V2`, `PHASE_CONFIG_V2`, `PHASE_NOISE_V2`, `PHASE_GROUPS_V2`.[file:2]
+- `--curriculum-mode v3_smooth` → `PHASE_LIST_V3`, `PHASE_CONFIG_V3`, `PHASE_NOISE_V3`, `PHASE_GROUPS_V3`.[file:2]
+
+### 5.2 90% Mastery per Phase
+
+Both V2 and V3 use the same advancement logic in the trainer.[file:1][file:2]
+
+- For each phase `phase_name`, advancement requires:
+  - `phase_episode_count[phase_name] >= phase_config[phase_name]["min"]`.[file:2]
+  - A rolling mastery window (default 500 episodes) of **individual success fraction** ≥ 90%.[file:1][file:2]
+  - The same rolling window of **team success** ≥ 90%.[file:1][file:2]
+- `max_episodes` is effectively 999999 for all phases, so advancement is **mastery-only**, not time-based.[file:2]
+
+For V3, the `PHASE_CONFIG_V3` table is:[file:2]
+
+- Easy1: `min=300`, `threshold=0.90`.
+- Easy2: `min=400`, `threshold=0.90`.
+- Easy3: `min=500`, `threshold=0.90`.
+- Med1: `min=600`, `threshold=0.90`.
+- Med2: `min=800`, `threshold=0.90`.
+- Hard1: `min=1000`, `threshold=0.90`.
+- Hard2: `min=1500`, `threshold=0.90`.
+- VHard: `min=2000`, `threshold=0.90`.
+
+Every 500 episodes, the trainer computes per-phase rolling mastery using deques of recent success values and checks whether the current phase meets the gate; only then does it advance and broadcast `set_phase` to all workers.[file:1][file:2]
+
+### 5.3 Phase Groups and Noise Schedules
+
+The curriculum is tightly coupled to replay sampling and exploration noise.[file:1][file:2]
+
+- **Phase groups for V3** (`PHASE_GROUPS_V3`):
+  - Easy1/Easy2/Easy3 share a group.
+  - Med1/Med2 share a group.
+  - Hard1/Hard2/VHard share a group.[file:2]
+- **Base exploration noise** (`PHASE_NOISE_V3`):
+  - Easy1/Easy2/Easy3: 0.20, 0.18, 0.16.
+  - Med1: 0.13.
+  - Med2: 0.10.
+  - Hard1/Hard2/VHard: 0.08, 0.06, 0.05.[file:2]
+
+The trainer computes `noise_scale` per episode using `compute_adaptive_noise`, which:[file:2]
+
+- Increases noise during early phase episodes (`phase_episode_count < 100`).
+- Decreases noise when 100-episode **team success** ≥ 90% (mastery clamp).
+- Boosts noise when a phase is stuck with low team success (< 30% for > 2000 episodes).
+- Optionally uses 400-episode windows to detect plateaus (50–84% success with low variance) and slightly increase noise to escape them.[file:2]
+
+---
+
+## 6. Reward Design (Reward+Smooth Mode)
+
+### 6.1 Reward Mode Selection
+
+`train_maddpg_v3.py` supports multiple reward configurations via `--reward-mode`.[file:2]
+
+- `v2_baseline`: original dense V2 reward with multiple shaping terms.[file:2]
+- Additional pruned/clean variants are present but not the canonical choice in this configuration.[file:1][file:2]
+
+The **canonical V3 training mode** is:
+
+```bash
+--reward-mode v2_baseline --curriculum-mode v3_smooth
+```
+
+as documented at the top of `train_maddpg_v3.py`.[file:1][file:2]
+
+### 6.2 Event Structure and Reward Terms
+
+The high-level reward hierarchy is:[file:1][file:3]
+
+- **Per-robot goal completion**:
+  - When a robot enters the success radius (`dist < goal_threshold`), it receives the largest positive per-robot reward; it is then marked `frozen` and removed from further motion.[file:3]
+- **Partial team completion**:
+  - When at least `N − 1` robots are frozen, a partial team bonus is added on top of individual goal rewards.[file:1][file:3]
+- **Full team completion**:
+  - When all robots are frozen before timeout, a larger team-wide bonus is applied.[file:1][file:3]
+- **Collision penalty**:
+  - Per-step negative reward when `collided` is true for a robot; the environment increments `collision_count` each time, which is available for diagnostics and penalty calculation.[file:3]
+- **Timeout penalties**:
+  - The trainer injects terminal penalties when an episode ends by timeout rather than by all robots reaching their goals.[file:2]
+
+### 6.3 Timeout Penalties in the Trainer
+
+`train_maddpg_v3.py` exposes CLI parameters:[file:1][file:2]
+
+- `partial_timeout_penalty` (default 10.0).
+- `zero_timeout_penalty` (default 6.0).
+
+When building `episode_data` and transitions, the trainer:
+
+- Detects whether an episode ended via truncation (timeout) with some but not all robots frozen (partial success) and applies `partial_timeout_penalty` to the final rewards.[file:2]
+- Detects zero-goal timeouts and applies `zero_timeout_penalty`.[file:2]
+
+This is explicitly designed to make one-goal or zero-goal timeout basins unattractive relative to full team success, aligning reward with the 90% **team** success gate.[file:1][file:2]
+
+### 6.4 Catastrophe Handling
+
+Episodes with many collisions are treated specially.[file:1][file:2]
+
+- Episodes with ≥ 100 collisions are classified as catastrophes.[file:2]
+- Approximately 40% of catastrophe episodes are kept in replay; the rest are discarded, so that very negative but rare trajectories do not fully dominate learning.[file:1][file:2]
+
+This balances the need to expose the critic to failure modes with the need to maintain a diverse replay buffer.
+
+---
+
+## 7. Replay Buffer and Sampling Logic
+
+### 7.1 Data Structures
+
+The V3 replay buffer is engineered for performance and phase-aware sampling.[file:1][file:2]
+
+- Two list-backed circular buffers:
+  - `_main_buf`: general transitions.
+  - `_succ_buf`: success-biased transitions (size ≈ 20% of total capacity).[file:2]
+- Each pool has a phase index:
+  - `phase_name → set(indices)` for O(1) lookup of indices belonging to a specific phase group.[file:2]
+
+Compared to deque-based buffers with linear scans, this design avoids O(n) phase filtering and significantly reduces sampling overhead at 200k buffer size.[file:2]
+
+### 7.2 Sampling Policy
+
+`ReplayBuffer.sample(batch_size, current_phase)` constructs a batch as follows.[file:2]
+
+1. Determine phase group using `PHASE_GROUPS_V3[current_phase]`.
+2. Compute `n_success = min(int(batch_size * 0.3), len(_succ_buf))`.
+   - If `success_phase_filter` is enabled and enough success samples exist in the current phase group, it samples from those indices; otherwise from the entire success pool.[file:2]
+3. Compute `n_main = batch_size − n_success`.
+   - Half of `n_main` is drawn from main-buffer samples in the same phase group.
+   - The remaining half is drawn uniformly from the full main buffer.[file:2]
+
+This ensures that each gradient step sees:
+
+- ~30% success transitions.
+- ~35% same-phase failures.
+- ~35% mixed-phase experiences.
+
+### 7.3 Success Buffer Refresh
+
+The buffer provides `refresh_success_buffer(keep_ratio=0.5)`.[file:2]
+
+- Keeps only the most recent `keep_ratio` of success transitions.
+- Rebuilds the success-pool phase index from these recent entries.[file:2]
+
+This decays the influence of very old successes (e.g. Easy-phase) once the curriculum advances to harder phases.
+
+---
+
+## 8. Parallel Environment Rollout and CPU Budgeting
+
+### 8.1 Architecture
+
+The parallel rollout infrastructure follows a SubprocVecEnv pattern.[file:1][file:2]
+
+- Main process:
+  - Owns all neural networks and the replay buffer.[file:2]
+- Worker processes:
+  - Each runs its own `MiningEnvironmentMADDPG_V3` instance.[file:1][file:2]
+  - Communicate via pipe messages: `('reset',)`, `('step', actions)`, `('get_attr', name)`, `('set_attr', name, value)`, `('call_method', name, args, kwargs)`, `('close',)`.[file:2]
+
+### 8.2 CPU Budgeting
+
+`train_maddpg_v3.py` enforces a soft CPU budget.[file:2]
+
+- `n_cpus = os.cpu_count()`.
+- If `--torch-threads` is not specified:
+  - `torch_threads = max(1, n_cpus − num_parallel_envs)`.[file:2]
+- Prints a summary:
+  - `env_workers + torch_threads` vs `n_cpus` and warns when the total exceeds CPU cores.[file:2]
+
+This prevents severe oversubscription when running with many parallel environments.
+
+### 8.3 Experimental Modes
+
+Launch modes described in the docs include:[file:1]
+
+- **Single-env mode**:
+  - `python3 train_maddpg_v3.py --episodes 100000 --reward-mode v2_baseline --curriculum-mode v3_smooth`.[file:1]
+- **Parallel rollout**:
+  - `--num-parallel-envs N` selects N worker processes; launch scripts (`run_single_max.sh`, `run_parallel.sh`) configure jobs under different CPU budgets.[file:1]
+
+For your report, you should explicitly state the values of `num_parallel_envs`, `torch_threads`, and CPU cores actually used in each major experiment.
+
+---
+
+## 9. Termination, Truncation, and "Frozen" Semantics
+
+The environment returns per-agent terminations and truncations that define the MDP.[file:3]
+
+- **Per-agent termination**:
+  - For each robot, `terminations[agent] = True` when that robot is `frozen` (has entered the goal threshold region).[file:3]
+- **Truncation (timeout)**:
+  - `truncations[agent] = (timestep >= max_episode_steps) and not all_frozen`.
+  - This indicates timeouts when not all robots have reached goals.[file:3]
+- **Team success**:
+  - `all_frozen = all(state['frozen'] for state in robot_states.values())`; when true, the episode can end early because all goals are reached.[file:3]
+
+The trainer can optionally treat truncations as terminals in the Bellman backup via `treat_truncations_as_terminals` in `MADDPG_V3`; this choice should be documented for each reported run.[file:2]
+
+---
+
+## 10. MADDPG Training Loop and Diagnostics
+
+### 10.1 Hyperparameters and Updates
+
+`MADDPG_V3` trains as follows.[file:2]
+
+- Sample a batch from `ReplayBuffer.sample(batch_size)`.
+- Build per-agent tensors for observations, actions, rewards, next observations, terminations, and truncations.[file:2]
+- For each agent:
+  - Compute Q-targets using twin target critics and noisy target actions.
+  - Apply critic update with MSE loss on both Q networks.
+  - Every `policy_delay` steps, update the actor by maximizing Q1 under the current critic, optionally masking out terminated samples if `mask_actor_on_terminated` is enabled.[file:2]
+- Clip gradients and soft-update target networks with \(\tau = 0.005\).[file:2]
+
+Diagnostics tracked per train step include `q_target_mean`, `q_pred_mean`, `td_abs_mean`, `actor_saturation` (fraction of actions with |a| > 0.95), and gradient norms.[file:2]
+
+### 10.2 Dead-Actor Recovery
+
+`recover_dead_actors` is a non-trivial training heuristic that prevents some robots from becoming permanently bad.[file:2]
+
+- Computes per-robot success rates over a recent window.[file:2]
+- Finds the best-performing robot.
+- For any robot whose success rate is below a small threshold while the best robot’s success is at least three times higher, it:[file:2]
+  - Copies the actor and target actor weights from the best robot.[file:2]
+  - Adds small Gaussian noise to all actor parameters to preserve some diversity.[file:2]
+
+This is important to document in the report because it materially affects training dynamics, especially in later phases where one robot may lag behind others.
+
+---
+
+## 11. Med1/Med2 Analysis Plan (From Original MD)
+
+The existing documentation outlines a plan for Med1 diagnostics using training logs.[file:1]
+
+- Use per-episode logs (`episode`, `reward`, `success_fraction`, `team_success`, `goals_reached`, `steps`, `collisions`, `phase`, etc.) to focus on Med1 episodes.[file:1][file:2]
+- For each 10k-episode block, compute:
+  - Mean team_success.
+  - Mean individual success_fraction.
+  - Fraction of timeouts vs early successes.
+  - Mean collisions per episode.
+  - Fraction of partial-success timeouts (some goals reached, no team success).[file:1]
+- Compute the best 500-episode sliding window of Med1 team_success to evaluate how close the system comes to the 90% mastery bar.[file:1]
+
+This analysis is used to decide whether to tune reward penalties or adjust Med1 thresholds in `PHASE_CONFIG_V3`, strictly based on V3 logs.
+
+---
+
+## 12. Summary of Contributions (Combined View)
+
+Grounded entirely in the attached code and documentation, your contributions can be summarized as:[file:1][file:2][file:3]
+
+- **Strict 90% mastery curriculum for a realistic 3-robot mining task**:
+  - Explicit phase configuration tables (V2 and V3) with mastery-only advancement and no episode cap, plus a smooth V3 curriculum with unified 0.75 m thresholds.[file:1][file:2][file:3]
+- **Environment and reward design aligned with geometry**:
+  - A 50 m × 50 m mining arena with detailed obstacles, realistic robot dynamics, a vectorized LiDAR model, and a goal-first reward hierarchy with explicit collision penalties and timeout penalties to prevent reward hacking via partial timeouts.[file:1][file:2][file:3]
+- **Phase-aware, success-weighted replay buffer**:
+  - O(1) list-backed circular buffers, per-phase indices, success upsampling, and success buffer refresh to keep learning focused on the current difficulty band.[file:1][file:2]
+- **Adaptive exploration and robustness heuristics**:
+  - Phase-aware adaptive noise schedules, dead-actor recovery, gradient clipping, and Q-value clamping that together stabilize training in harder phases.[file:2]
+- **Parallel rollout system with CPU budgeting**:
+  - A SubprocVecEnv-like environment manager with explicit CPU-budget logic and documented single/parallel modes suitable for 100k+ episode runs.[file:1][file:2]
+
+All of these points are now explicitly represented in this combined markdown file so that a reviewer can reconstruct your implementation and experiments directly from `train_maddpg_v3.py`, `environment_maddpg_v2.py`/`v3`, and the associated logs and scripts.
